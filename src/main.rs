@@ -4,7 +4,8 @@ extern crate rocket;
 mod routes;
 mod services;
 
-use services::mqtt::MQTT;
+use rocket::tokio::sync::broadcast;
+use services::utils::Data;
 
 #[get("/")]
 fn index() -> &'static str {
@@ -25,7 +26,22 @@ fn index() -> &'static str {
 #[launch]
 fn rocket() -> _ {
     rocket::build()
+        .manage(broadcast::channel::<Data>(1).0)
         .mount("/", routes![index])
-        .mount("client/", routes![routes::client::client_post_message])
-        .manage(MQTT::new())
+        .mount(
+            "/client/",
+            routes![
+                routes::client::client_post_message,
+                routes::client::client_get_message,
+                routes::client::client_post_pubkey,
+                routes::client::client_get_pubkey,
+            ],
+        )
+        .mount(
+            "/operator/",
+            routes![
+                routes::operator::operator_post_message,
+                routes::operator::operator_post_pubkey,
+            ],
+        )
 }
