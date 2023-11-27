@@ -4,28 +4,27 @@ extern crate rocket;
 mod routes;
 mod services;
 
+use rocket::serde::Deserialize;
 use rocket::tokio::sync::broadcast;
 use services::utils::Data;
+
+#[derive(Deserialize)]
+#[serde(crate = "rocket::serde")]
+pub struct Operator {
+    address: String,
+    port: u16,
+}
 
 #[get("/")]
 fn index() -> &'static str {
     "
-    USAGE
-
-      POST /
-
-          accepts raw data in the body of the request and responds with a URL of
-          a page containing the body's content
-
-      GET /<id>
-
-          retrieves the content for the paste with id `<id>`
+    API status: up
     "
 }
 
 #[launch]
 fn rocket() -> _ {
-    rocket::build()
+    let rocket = rocket::build()
         .manage(broadcast::channel::<Data>(1).0)
         .mount("/", routes![index])
         .mount(
@@ -43,5 +42,11 @@ fn rocket() -> _ {
                 routes::operator::operator_post_message,
                 routes::operator::operator_post_pubkey,
             ],
-        )
+        );
+
+    let figment = rocket.figment();
+
+    let config: Operator = figment.extract().expect("config");
+
+    rocket.manage(config)
 }
