@@ -8,11 +8,11 @@ use rocket::serde::Deserialize;
 use rocket::tokio::sync::broadcast;
 use services::utils::Data;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 #[serde(crate = "rocket::serde")]
 pub struct Operator {
-    address: String,
-    port: u16,
+    address_op: String,
+    port_op: u16,
 }
 
 #[get("/")]
@@ -47,6 +47,8 @@ fn rocket() -> _ {
     let figment = rocket.figment();
 
     let config: Operator = figment.extract().expect("config");
+
+    println!("{:?}", config);
 
     rocket.manage(config)
 }

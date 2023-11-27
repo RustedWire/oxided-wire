@@ -15,7 +15,7 @@ pub async fn client_post_message(message: Json<Data>, config: &State<Operator>) 
         DataType::PUBKEY => return Status::NotAcceptable,
     }
 
-    let url = format!("http://{}:{}/operator/pubkey", config.address, config.port);
+    let url = format!("http://{}:{}/operator/pubkey", config.address_op, config.port_op);
 
     let client = reqwest::Client::new();
     let _res = client
@@ -55,7 +55,7 @@ pub async fn client_post_pubkey(pubkey: Json<Data>, config: &State<Operator>) ->
 
     save_to_file("alice.pub", &pubkey.data).await;
 
-    let url = format!("http://{}:{}/operator/pubkey", config.address, config.port);
+    let url = format!("http://{}:{}/operator/pubkey", config.address_op, config.port_op);
 
     let client = reqwest::Client::new();
     let _res = client
