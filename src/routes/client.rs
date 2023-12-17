@@ -4,6 +4,8 @@ use rocket::serde::json::Json;
 use rocket::tokio::select;
 use rocket::tokio::sync::broadcast::{error::RecvError, Sender};
 use rocket::{Shutdown, State};
+use rocket_ws;
+use serde_json;
 
 use crate::Operator;
 use crate::services::utils::{get_data_file, save_to_file, Data, DataType};
@@ -28,10 +30,10 @@ pub async fn client_post_message(message: Json<Data>, config: &State<Operator>) 
 }
 
 #[get("/message")]
-pub async fn client_get_message(queue: &State<Sender<Data>>, mut end: Shutdown) -> EventStream![] {
+pub async fn client_get_message(queue: &State<Sender<Data>>, mut end: Shutdown, ws: rocket_ws::WebSocket) -> rocket_ws::Stream!['static] {
     let mut rx = queue.subscribe();
 
-    EventStream! {
+    rocket_ws::Stream! { ws => 
         loop {
             let msg = select! {
                 msg = rx.recv() => match msg {
@@ -41,7 +43,7 @@ pub async fn client_get_message(queue: &State<Sender<Data>>, mut end: Shutdown) 
                 },
                 _ = &mut end => break,
             };
-            yield Event::json(&msg);
+            yield rocket_ws::Message::Text(serde_json::to_string(&msg).unwrap());
         }
     }
 }
