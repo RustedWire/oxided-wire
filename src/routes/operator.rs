@@ -3,7 +3,7 @@ use rocket::serde::json::Json;
 use rocket::tokio::sync::broadcast::Sender;
 use rocket::State;
 
-use crate::services::utils::{save_to_file, Data};
+use crate::{services::utils::{save_to_file, Data}, ServerInfo};
 
 #[post("/message", format = "json", data = "<message>")]
 pub async fn operator_post_message(message: Json<Data>, queue: &State<Sender<Data>>) -> Status {
@@ -19,4 +19,9 @@ pub async fn operator_post_pubkey(pubkey: Json<Data>, queue: &State<Sender<Data>
     let _res = queue.send(pubkey.into_inner());
 
     Status::Accepted
+}
+
+#[get("/suid")]
+pub async fn operator_suid(id_server: &State<ServerInfo>) -> String {
+    return id_server.id.to_string()
 }
