@@ -1,4 +1,0 @@
-[default]
-address = "192.168.250.165"
-address_op = "192.168.250.5"
-port_op = 8080
