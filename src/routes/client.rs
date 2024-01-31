@@ -2,7 +2,7 @@ use crate::services::ws_message::ProtoTransaction;
 use crate::Operator;
 use rocket::futures::stream::FusedStream;
 use rocket::futures::{SinkExt, StreamExt};
-use rocket::serde::json::{to_pretty_string, from_str};
+use rocket::serde::json::{to_string, from_str};
 use rocket::tokio::select;
 use rocket::tokio::sync::broadcast::{error::RecvError, Sender};
 use rocket::State;
@@ -32,7 +32,7 @@ pub async fn connect(
                     recv_message = rx.recv() => {
                         match recv_message {
                             Ok(recv_msg) => {
-                                let json_string = to_pretty_string(&recv_msg);
+                                let json_string = to_string(&recv_msg);
                                 let _ = stream.send(Message::Text(json_string.unwrap())).await;
                             }
                             Err(RecvError::Closed) => break,
