@@ -3,10 +3,13 @@ extern crate rocket;
 
 mod routes;
 mod services;
+mod sqlx;
 
 use rocket::serde::Deserialize;
 use rocket::tokio::sync::broadcast;
-use services::utils::Data;
+use services::ws_message::ProtoTransaction;
+
+use crate::services::ws_message::ProtoMessage;
 
 #[derive(Deserialize, Debug)]
 #[serde(crate = "rocket::serde")]
@@ -24,31 +27,35 @@ fn index() -> &'static str {
 
 #[launch]
 fn rocket() -> _ {
+
+/*    let test = ProtoTransaction{
+        uuid: uuid::Uuid::now_v7(),
+        step: 1,
+        data: ProtoMessage::Message(
+            "LEONARD".to_string().into_bytes()
+        )
+    };
+
+    println!("{}", rocket::serde::json::to_pretty_string(&test).unwrap());*/
+
     let rocket = rocket::build()
-        .manage(broadcast::channel::<Data>(1).0)
+        //.attach(sqlx::stage())
+        .manage(broadcast::channel::<ProtoTransaction>(1).0)
         .mount("/", routes![index])
         .mount(
             "/client/",
             routes![
-                routes::client::client_post_message,
-                routes::client::client_get_message,
-                routes::client::client_post_pubkey,
-                routes::client::client_get_pubkey,
+                routes::client::connect,
             ],
         )
         .mount(
             "/operator/",
             routes![
-                routes::operator::operator_post_message,
-                routes::operator::operator_post_pubkey,
+                routes::operator::transmit,
             ],
         );
-
     let figment = rocket.figment();
-
     let config: Operator = figment.extract().expect("config");
-
     println!("{:?}", config);
-
     rocket.manage(config)
 }

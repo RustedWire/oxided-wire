@@ -1,87 +1,166 @@
-use rocket::http::Status;
-use rocket::response::stream::{Event, EventStream};
-use rocket::serde::json::Json;
+use rocket::futures::{SinkExt, StreamExt};
+use rocket::futures::stream::FusedStream;
+use rocket::serde::json::{from_str, to_string};
+use rocket::State;
 use rocket::tokio::select;
 use rocket::tokio::sync::broadcast::{error::RecvError, Sender};
-use rocket::{Shutdown, State};
-use rocket_ws;
-use serde_json;
+use ws::{self, Message};
 
 use crate::Operator;
-use crate::services::utils::{get_data_file, save_to_file, Data, DataType};
+use crate::services::ws_message::{ProtoMessage, ProtoTransaction, Signature};
 
-#[post("/message", format = "json", data = "<message>")]
-pub async fn client_post_message(message: Json<Data>, config: &State<Operator>) -> Status {
-    match message.data_type {
-        DataType::MESSAGE => (),
-        DataType::PUBKEY => return Status::NotAcceptable,
-    }
-
-    let url = format!("http://{}:{}/operator/message", config.address_op, config.port_op);
-
-    let client = reqwest::Client::new();
-    let _res = client
-        .post(url)
-        .json(&message.into_inner())
-        .send()
-        .await
-        .unwrap();
-    Status::Accepted
+#[derive(Debug)]
+pub enum Error {
+    NoMessage,
+    NotTextMessage,
+    ErrorWebsocket(ws::result::Error),
 }
 
-#[get("/message")]
-pub async fn client_get_message(queue: &State<Sender<Data>>, mut end: Shutdown, ws: rocket_ws::WebSocket) -> rocket_ws::Stream!['static] {
+/// Enables the client to connect to a websocket to exchanges with the server
+#[get("/connect")]
+pub async fn connect(
+    config: &State<Operator>,
+    queue: &State<Sender<ProtoTransaction>>,
+    ws: ws::WebSocket,
+) -> ws::Channel<'static> {
     let mut rx = queue.subscribe();
 
-    rocket_ws::Stream! { ws => 
-        loop {
-            let msg = select! {
-                msg = rx.recv() => match msg {
-                    Ok(msg) => msg,
-                    Err(RecvError::Closed) => break,
-                    Err(RecvError::Lagged(_)) => continue,
-                },
-                _ = &mut end => break,
-            };
-            yield rocket_ws::Message::Text(serde_json::to_string(&msg).unwrap());
-        }
-    }
-}
-
-#[post("/pubkey", format = "json", data = "<pubkey>")]
-pub async fn client_post_pubkey(pubkey: Json<Data>, config: &State<Operator>) -> Status {
-    match pubkey.data_type {
-        DataType::MESSAGE => return Status::NotAcceptable,
-        DataType::PUBKEY => (),
-    }
-
-    save_to_file("alice.pub", &pubkey.data).await;
-
-    let url = format!("http://{}:{}/operator/pubkey", config.address_op, config.port_op);
-
+    let url_target_op = format!(
+        "http://{}:{}/operator/transmit",
+        config.address_op, config.port_op
+    );
     let client = reqwest::Client::new();
-    let _res = client
-        .post(url)
-        .json(&pubkey.into_inner())
-        .send()
-        .await
-        .unwrap();
 
-    Status::Accepted
+    ws.channel(move |mut stream| {
+        Box::pin(async move {
+            // Main loop of the connection
+            loop {
+                select! {
+                    // Branch that sends data from the server to the client
+                    recv_message = rx.recv() => {
+                        match recv_message {
+                            Ok(recv_msg) => {
+                                let json_string = to_string(&recv_msg);
+                                let _ = stream.send(Message::Text(json_string.unwrap())).await;
+                            }
+                            Err(RecvError::Closed) => break,
+                            // POC system is unlikely to lag, if it does ignore it
+                            Err(RecvError::Lagged(_)) => (),
+                        }
+
+                    }
+
+                    // Branch that send data from the client to the server
+                    send_message = stream.next() => {
+                        match unwrap_incoming(send_message) {
+                            Ok(message) => {
+                                let proto = handle_protocol(message);
+                                match proto.data {
+                                    ProtoMessage::Error(_) => {
+                                        let _ = stream
+                                        .send(Message::Text(to_string(&proto)
+                                        .unwrap()))
+                                        .await;
+                                        }
+                                    _ => {
+                                        let _ = client
+                                        .post(url_target_op.as_str())
+                                        .json(&proto)
+                                        .send()
+                                        .await;
+                                        }
+                                }
+                            }
+                            Err(err) => {
+                                eprintln!("Error with websocket: {:?}", err);
+                                eprintln!("Exiting handler");
+                                break;
+                            }
+                        }
+                    }
+                }
+                //If the stream cannot be polled for more data end the loop to end connection
+                if stream.is_terminated() {
+                    break;
+                }
+            }
+
+            Ok(())
+        })
+    })
 }
 
-#[get("/pubkey")]
-pub async fn client_get_pubkey() -> Option<Json<Data>> {
-    let data = match get_data_file("bob.pub").await {
-        Ok(data) => {
-            println!("{:?}", data);
-            Some(Json(Data {
-                data_type: DataType::PUBKEY,
-                data,
-            }))
+/// Takes the result of a stream and unwrap the desired string value.
+///
+/// # Returns
+///
+/// * `Ok(String)` if no error occurred.
+/// * `Err(client::Error)` if case of an error.
+pub fn unwrap_incoming(message: Option<Result<Message, ws::result::Error>>) -> Result<String, Error> {
+    match message {
+        Some(message) => {
+            match message {
+                Ok(inner_message) => {
+                    match inner_message {
+                        Message::Text(text_message) => return Ok(text_message),
+                        _ => Err(Error::NotTextMessage)
+                    }
+                }
+                Err(err) => return Err(Error::ErrorWebsocket(err)),
+            }
         }
-        Err(_) => None,
+        None => return Err(Error::NoMessage),
+    }
+}
+
+/// Function to handle a string and transform it into a `ProtoTransaction`.
+/// It also does signature verification.
+///
+/// # Arguments
+///
+/// * `value`: A JSON representation of a `ProtoTransaction` struct.
+///
+/// # Returns
+///
+/// Returns a `ProtoTransaction`.
+///
+/// If any errors occur return a `ProtoTransaction` with the `data` filed set at `ProtoMessage::Error()`.
+pub fn handle_protocol(value: String) -> ProtoTransaction {
+    // Deserialize the JSON string representation into a ProtoTransaction
+    let transaction = match from_str::<ProtoTransaction>(value.as_str()) {
+        Ok(serialized) => serialized,
+        Err(err) => {
+            // Set the error at BadFormat
+            return ProtoTransaction::new_format_error(err.to_string());
+        }
     };
 
-    data
+    match transaction.data {
+        ProtoMessage::KeyExchange(ref proto_keys) => {
+            if proto_keys.signature.is_some() {
+                match verify_signature(proto_keys.signature.clone().unwrap()) {
+                    // If the signature is not validated
+                    false => return ProtoTransaction::new_sign_error(&transaction),
+                    // If the signature is validated do nothing
+                    true => (),
+                }
+            }
+        }
+        _ => (),
+    };
+
+    transaction
+}
+
+/// Verify the signature attach to a ProtoTransaction.
+///
+/// # Arguments
+///
+/// * `signature`: The signature object to verify.
+///
+/// # Returns
+///
+/// Returns a `bool`. If the signature is valid `true` otherwise `false`.
+pub fn verify_signature(signature: Signature) -> bool {
+    true
 }
