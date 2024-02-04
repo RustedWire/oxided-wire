@@ -5,10 +5,16 @@ use rocket::State;
 use rocket::tokio::select;
 use rocket::tokio::sync::broadcast::{error::RecvError, Sender};
 use ws::{self, Message};
-use crypto_mob::{VerifyingKey};
 
 use crate::Operator;
 use crate::services::ws_message::{ProtoMessage, ProtoTransaction, Signature};
+
+#[derive(Debug)]
+pub enum Error {
+    NoMessage,
+    NotTextMessage,
+    ErrorWebsocket(ws::result::Error),
+}
 
 /// Enables the client to connect to a websocket to exchanges with the server
 #[get("/connect")]
@@ -46,33 +52,30 @@ pub async fn connect(
 
                     // Branch that send data from the client to the server
                     send_message = stream.next() => {
-                        match send_message {
-                            Some(message) => {
-                                match message.unwrap() {
-                                    // Only use text based ws
-                                    Message::Text(value) => {
-                                        let proto = handle_protocol(value);
-                                        match proto.data {
-                                            ProtoMessage::Error(_) => {
-                                                let _ = stream
-                                                        .send(Message::Text(to_string(&proto)
-                                                        .unwrap()))
-                                                        .await;
-                                            }
-                                            _ => {
-                                               let _ = client
-                                                        .post(url_target_op.as_str())
-                                                        .json(&proto)
-                                                        .send()
-                                                        .await;
-                                            }
+                        match unwrap_incoming(send_message) {
+                            Ok(message) => {
+                                let proto = handle_protocol(message);
+                                match proto.data {
+                                    ProtoMessage::Error(_) => {
+                                        let _ = stream
+                                        .send(Message::Text(to_string(&proto)
+                                        .unwrap()))
+                                        .await;
                                         }
-                                    }
-                                    // If Message is not a text
-                                    _ => continue,
+                                    _ => {
+                                        let _ = client
+                                        .post(url_target_op.as_str())
+                                        .json(&proto)
+                                        .send()
+                                        .await;
+                                        }
                                 }
-                            },
-                            None => continue,
+                            }
+                            Err(err) => {
+                                eprintln!("Error with websocket: {:?}", err);
+                                eprintln!("Exiting handler");
+                                break;
+                            }
                         }
                     }
                 }
@@ -85,6 +88,29 @@ pub async fn connect(
             Ok(())
         })
     })
+}
+
+/// Takes the result of a stream and unwrap the desired string value.
+///
+/// # Returns
+///
+/// * `Ok(String)` if no error occurred.
+/// * `Err(client::Error)` if case of an error.
+pub fn unwrap_incoming(message: Option<Result<Message, ws::result::Error>>) -> Result<String, Error> {
+    match message {
+        Some(message) => {
+            match message {
+                Ok(inner_message) => {
+                    match inner_message {
+                        Message::Text(text_message) => return Ok(text_message),
+                        _ => Err(Error::NotTextMessage)
+                    }
+                }
+                Err(err) => return Err(Error::ErrorWebsocket(err)),
+            }
+        }
+        None => return Err(Error::NoMessage),
+    }
 }
 
 /// Function to handle a string and transform it into a `ProtoTransaction`.
@@ -100,7 +126,7 @@ pub async fn connect(
 ///
 /// If any errors occur return a `ProtoTransaction` with the `data` filed set at `ProtoMessage::Error()`.
 pub fn handle_protocol(value: String) -> ProtoTransaction {
-    // Deserialize the JSON string represnetation into a ProtoTransaction
+    // Deserialize the JSON string representation into a ProtoTransaction
     let transaction = match from_str::<ProtoTransaction>(value.as_str()) {
         Ok(serialized) => serialized,
         Err(err) => {
@@ -126,7 +152,7 @@ pub fn handle_protocol(value: String) -> ProtoTransaction {
     transaction
 }
 
-/// Verify the signature attatch to a ProtoTransaction.
+/// Verify the signature attach to a ProtoTransaction.
 ///
 /// # Arguments
 ///

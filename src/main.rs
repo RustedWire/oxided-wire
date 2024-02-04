@@ -28,7 +28,7 @@ fn index() -> &'static str {
 #[launch]
 fn rocket() -> _ {
 
-    let test = ProtoTransaction{
+/*    let test = ProtoTransaction{
         uuid: uuid::Uuid::now_v7(),
         step: 1,
         data: ProtoMessage::Message(
@@ -36,9 +36,10 @@ fn rocket() -> _ {
         )
     };
 
-    println!("{}", rocket::serde::json::to_pretty_string(&test).unwrap());
+    println!("{}", rocket::serde::json::to_pretty_string(&test).unwrap());*/
 
     let rocket = rocket::build()
+        //.attach(sqlx::stage())
         .manage(broadcast::channel::<ProtoTransaction>(1).0)
         .mount("/", routes![index])
         .mount(
@@ -53,12 +54,8 @@ fn rocket() -> _ {
                 routes::operator::transmit,
             ],
         );
-
     let figment = rocket.figment();
-
     let config: Operator = figment.extract().expect("config");
-
     println!("{:?}", config);
-
     rocket.manage(config)
 }
